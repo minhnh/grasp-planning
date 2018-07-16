@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="detection_service_name" default="detect_image"/>
+    <arg name="depth_image_topic" default="/camera/depth/image_raw"/>
+    <arg name="rgb_image_topic" default="/camera/rgb/image_raw"/>
+    <arg name="class_annotations" default="$(find ssd_keras_ros)/models/coco_classes.yml" />
+    <arg name="kwargs_file" default="$(find ssd_keras_ros)/models/ssd_keras_object_detector_kwargs.yml" />
+    <arg name="detection_module" default="ssd_keras_ros" />
+    <arg name="detection_class" default="SSDKerasObjectDetector" />
+
+    <node pkg="grasp_planning" type="ssd_keras_gqcnn_node" name="ssd_keras_gqcnn_node" output="screen">
+        <param name="depth_image_topic" type="string" value="$(arg depth_image_topic)" />
+        <param name="rgb_image_topic" type="string" value="$(arg rgb_image_topic)" />
+    </node>
+
+    <include file="$(find mas_perception_libs)/ros/launch/image_detection.launch" >
+        <arg name="service_name" value="$(arg detection_service_name)" />
+        <arg name="class_annotations" value="$(arg class_annotations)" />
+        <arg name="kwargs_file" value="$(arg kwargs_file)" />
+        <arg name="detection_module" value="$(arg detection_module)" />
+        <arg name="detection_class" value="$(arg detection_class)" />
+    </include>
+</launch>
