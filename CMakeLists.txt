@@ -4,12 +4,13 @@ project(grasp_planning)
 add_compile_options(-std=c++11)
 
 find_package(catkin REQUIRED COMPONENTS
+  mcr_perception_msgs
+  message_filters
+  image_transport
+  sensor_msgs
   roslint
   roscpp
-  rospy
 )
-
-# catkin_python_setup()
 
 ###################################
 ## catkin specific configuration ##
@@ -20,7 +21,6 @@ catkin_package(
   CATKIN_DEPENDS
     ssd_keras_ros
     gqcnn
-    mas_perception_libs
 )
 
 ###########
@@ -31,21 +31,21 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
 )
 
-# executable ssd_keras_gqcnn_node
-add_executable(ssd_keras_gqcnn_node
-  ros/src/ssd_keras_gqcnn_node.cpp
+# executable image_detection_gqcnn_node
+add_executable(image_detection_gqcnn_node
+  ros/src/image_detection_gqcnn_node.cpp
 )
-add_dependencies(ssd_keras_gqcnn_node
+add_dependencies(image_detection_gqcnn_node
   ${catkin_EXPORTED_TARGETS}
 )
-target_link_libraries(ssd_keras_gqcnn_node
+target_link_libraries(image_detection_gqcnn_node
   ${catkin_LIBRARIES}
 )
 
 #############
 ## Install ##
 #############
-install(TARGETS ssd_keras_gqcnn_node
+install(TARGETS image_detection_gqcnn_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

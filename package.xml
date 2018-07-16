@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="2">
   <name>grasp_planning</name>
-  <version>0.0.0</version>
+  <version>0.1.0</version>
   <description>The grasp_planning package</description>
 
   <maintainer email="minh.nguyen@smail.inf.h-brs.de">Minh Nguyen</maintainer>
@@ -11,11 +11,15 @@
   <author email="minh.nguyen@smail.inf.h-brs.de">Minh Nguyen</author>
 
   <buildtool_depend>catkin</buildtool_depend>
-  <build_depend>mas_perception_libs</build_depend>
-  <exec_depend>mas_perception_libs</exec_depend>
+
+  <build_depend>mcr_perception_msgs</build_depend>
+  <build_depend>message_filters</build_depend>
+  <build_depend>image_transport</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+
   <exec_depend>ssd_keras_ros</exec_depend>
   <exec_depend>gqcnn</exec_depend>
+
   <depend>roscpp</depend>
-  <depend>rospy</depend>
 
 </package>
