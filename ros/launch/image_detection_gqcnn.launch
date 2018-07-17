@@ -1,17 +1,27 @@
 <?xml version="1.0"?>
 <launch>
-    <arg name="detection_service_name" default="/mas_perception/detect_image"/>
-    <arg name="depth_image_topic" default="/camera/depth/image_raw"/>
+    <arg name="namespace" default="grasp_planning" />
+    <!-- camera topics -->
+    <arg name="depth_image_topic" default="/camera/depth_registered/image_raw"/>
     <arg name="rgb_image_topic" default="/camera/rgb/image_raw"/>
+    <arg name="camera_info_topic" default="/camera/depth_registered/camera_info"/>
+    <!-- image detection service -->
+    <arg name="detection_service_name" default="/mas_perception/detect_image"/>
     <arg name="class_annotations" default="$(find ssd_keras_ros)/models/coco_classes.yml" />
     <arg name="kwargs_file" default="$(find ssd_keras_ros)/models/ssd_keras_object_detector_kwargs.yml" />
     <arg name="detection_module" default="ssd_keras_ros" />
     <arg name="detection_class" default="SSDKerasObjectDetector" />
 
-    <node pkg="grasp_planning" type="image_detection_gqcnn_node" name="image_detection_gqcnn_node" output="screen">
+    <node pkg="grasp_planning" type="image_detection_gqcnn_node" name="image_detection_gqcnn_node" output="screen"
+          ns="$(arg namespace)">
+        <param name="service_wait_time" type="int" value="10" />
+        <!-- camera topics -->
         <param name="depth_image_topic" type="string" value="$(arg depth_image_topic)" />
         <param name="rgb_image_topic" type="string" value="$(arg rgb_image_topic)" />
+        <param name="camera_info_topic" type="string" value="$(arg camera_info_topic)" />
+        <!-- services -->
         <param name="detection_service_name" type="string" value="$(arg detection_service_name)" />
+        <param name="gqcnn_service_name" type="string" value="/$(arg namespace)/plan_gqcnn_grasp" />
     </node>
 
     <include file="$(find mas_perception_libs)/ros/launch/image_detection.launch" >
@@ -20,5 +30,10 @@
         <arg name="kwargs_file" value="$(arg kwargs_file)" />
         <arg name="detection_module" value="$(arg detection_module)" />
         <arg name="detection_class" value="$(arg detection_class)" />
+    </include>
+
+    <include file="$(find gqcnn)/launch/gqcnn.launch" >
+        <arg name="ns" value="$(arg namespace)" />
+        <!--<arg name="config" value="$(arg class_annotations)" />-->
     </include>
 </launch>

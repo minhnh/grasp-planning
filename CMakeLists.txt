@@ -4,6 +4,7 @@ project(grasp_planning)
 add_compile_options(-std=c++11)
 
 find_package(catkin REQUIRED COMPONENTS
+  gqcnn
   mcr_perception_msgs
   message_filters
   image_transport
@@ -20,7 +21,6 @@ catkin_package(
     ros/include
   CATKIN_DEPENDS
     ssd_keras_ros
-    gqcnn
 )
 
 ###########
