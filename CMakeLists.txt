@@ -5,13 +5,17 @@ add_compile_options(-std=c++11)
 
 find_package(catkin REQUIRED COMPONENTS
   gqcnn
+  mas_perception_libs
   mcr_perception_msgs
   message_filters
   image_transport
   sensor_msgs
+  visualization_msgs
   roslint
   roscpp
 )
+
+find_package(OpenCV REQUIRED)
 
 ###################################
 ## catkin specific configuration ##
@@ -27,7 +31,7 @@ catkin_package(
 ## Build ##
 ###########
 include_directories(
- ros/include
+  ros/include
   ${catkin_INCLUDE_DIRS}
 )
 
@@ -40,6 +44,7 @@ add_dependencies(image_detection_gqcnn_node
 )
 target_link_libraries(image_detection_gqcnn_node
   ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
 )
 
 #############

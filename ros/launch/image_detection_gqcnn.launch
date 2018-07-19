@@ -14,7 +14,7 @@
 
     <node pkg="grasp_planning" type="image_detection_gqcnn_node" name="image_detection_gqcnn_node" output="screen"
           ns="$(arg namespace)">
-        <param name="service_wait_time" type="int" value="10" />
+        <param name="service_wait_time" type="int" value="15" />
         <!-- camera topics -->
         <param name="depth_image_topic" type="string" value="$(arg depth_image_topic)" />
         <param name="rgb_image_topic" type="string" value="$(arg rgb_image_topic)" />

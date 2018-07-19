@@ -16,6 +16,7 @@
 #include <message_filters/sync_policies/approximate_time.h>
 #include <image_transport/image_transport.h>
 #include <image_transport/subscriber_filter.h>
+#include <image_transport/publisher.h>
 #include <message_filters/subscriber.h>
 #include <mcr_perception_msgs/DetectImage.h>
 #include <gqcnn/GQCNNGraspPlanner.h>
@@ -23,7 +24,7 @@
 
 namespace mf = message_filters;
 namespace sm = sensor_msgs;
-namespace ip = image_transport;
+namespace it = image_transport;
 namespace mpm = mcr_perception_msgs;
 
 class ImageDetectionGQCNNNode
@@ -40,26 +41,39 @@ public:
 private:
     mpm::DetectImageResponse
     requestDetectionService(const sm::ImageConstPtr&);
+
     gqcnn::GQCNNGrasp
     requestGqcnnService(const gqcnn::GQCNNGraspPlannerRequest&);
+
     void
-    visualizeGrasps(const std::vector<gqcnn::GQCNNGrasp>&);
+    visualizeGraspsAndObjects(const sm::ImageConstPtr&, const std::vector<gqcnn::GQCNNGrasp> &,
+                              const mpm::ImageDetection &, const std::vector<size_t>&, const std::string &,
+                              double pGraspConfThreshold = sDefaultGraspConfThreshold);
+
+private:
+    const std::string cGraspMarkerTopic = "grasp_markers";
+    const std::string cMarkerNamespace = "gqcnn_grasps";
+    const std::string cBoxImageTopic = "detection_image";
+    static constexpr double sDefaultGraspConfThreshold = 0.01;
 
 private:
     ros::NodeHandle mNodeHandle;
-    ip::ImageTransport mImageTransport;
+    it::ImageTransport mImageTransport;
+
+    ros::ServiceClient mDetectionClient;
+    ros::ServiceClient mGqcnnClient;
+    it::Publisher mBoxImagePub;
+    ros::Publisher mMarkerPub;
+    ros::Publisher mMarkerArrayPub;
 
     // message filters
     typedef mf::sync_policies::ApproximateTime<sm::Image, sm::Image, sm::CameraInfo> ImagePolicy;
-    ip::SubscriberFilter mRgbImageSub;
-    ip::SubscriberFilter mDepthImageSub;
+    it::SubscriberFilter mRgbImageSub;
+    it::SubscriberFilter mDepthImageSub;
     mf::Subscriber<sm::CameraInfo> mCameraInfoSub;
     // Note: synchronizer instance needs to be declared after subscribers to avoid issue described in
     // https://github.com/ros/ros_comm/issues/720
     mf::Synchronizer<ImagePolicy> mSync;
-
-    ros::ServiceClient mDetectionClient;
-    ros::ServiceClient mGqcnnClient;
 
     std::chrono::seconds mWaitTime;
 };

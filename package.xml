@@ -12,11 +12,13 @@
 
   <buildtool_depend>catkin</buildtool_depend>
 
-  <build_depend>mcr_perception_msgs</build_depend>
   <build_depend>gqcnn</build_depend>
+  <build_depend>mas_perception_libs</build_depend>
+  <build_depend>mcr_perception_msgs</build_depend>
   <build_depend>message_filters</build_depend>
   <build_depend>image_transport</build_depend>
   <build_depend>sensor_msgs</build_depend>
+  <build_depend>visualization_msgs</build_depend>
 
   <exec_depend>ssd_keras_ros</exec_depend>
 
