@@ -1,0 +1,169 @@
+#!/usr/bin/env python2
+import os
+import yaml
+import numpy as np
+import rospy
+import tf
+from actionlib import SimpleActionClient
+from cv_bridge import CvBridge
+from sensor_msgs.msg import PointCloud2, Image as ImageMsg
+from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import String as StringMsg
+
+from mdr_pickup_action.msg import PickupAction, PickupGoal
+from mcr_perception_msgs.srv import DetectImage, DetectImageRequest
+from mas_perception_libs import ImageDetector
+from mas_perception_libs.utils import cloud_msg_to_image_msg, crop_organized_cloud_msg, crop_cloud_to_xyz
+from mas_perception_libs.visualization import draw_labeled_boxes_img_msg, bgr_dict_from_classes
+
+
+def request_single_image_detection(detection_client, img_msg):
+    # send request and get response
+    request = DetectImageRequest()
+    request.images.append(img_msg)
+    response = detection_client(request)
+
+    # draw boxes on original image
+    # each detection is for one image message, show there should be exactly 1 detection
+    if len(response.detections) == 0:
+        rospy.logerr('no detection service response for requested image')
+        return None
+
+    return response.detections[0]
+
+
+class TopicHandler(object):
+    def __init__(self, detection_client, result_pub, color_dict):
+        self._detection_client = detection_client
+        self._result_pub = result_pub
+        self._color_dict = color_dict
+        self._cv_bridge = CvBridge()
+
+        self._client = SimpleActionClient('/pickup_server', PickupAction)
+        self._client.wait_for_server()
+        self._event_sub = rospy.Subscriber("~event_in", StringMsg, self._event_in_cb)
+        self._triggered = False
+
+    def _event_in_cb(self, _):
+        self._triggered = True
+
+
+class CloudTopicHandler(TopicHandler):
+    def __init__(self, cloud_topic_name, detection_client, result_pub, color_dict, target_frame):
+        super(CloudTopicHandler, self).__init__(detection_client, result_pub, color_dict)
+        rospy.loginfo("cloud topic %s", cloud_topic_name)
+        self._cloud_sub = rospy.Subscriber(cloud_topic_name, PointCloud2, self._cloud_callback)
+        self._target_frame = target_frame
+        self._tf_listener = tf.TransformListener()
+
+    def _cloud_callback(self, cloud_msg):
+        if not self._triggered:
+            rospy.loginfo("not triggered")
+            return
+        self._triggered = False
+
+        img_msg = cloud_msg_to_image_msg(cloud_msg)
+        rospy.loginfo("in cloud callback")
+        detection = request_single_image_detection(self._detection_client, img_msg)
+
+        # generate 2D bounding boxes from detection result
+        boxes = ImageDetector.detection_msg_to_bounding_boxes(detection, self._color_dict)
+        if len(boxes) == 0:
+            rospy.logwarn("no bounding box deteced in image")
+            return
+
+        # draw resulting image
+        rospy.loginfo("visualizing bounding boxes")
+        drawn_img_msg = draw_labeled_boxes_img_msg(self._cv_bridge, img_msg, boxes)
+        self._result_pub.publish(drawn_img_msg)
+
+        # crop point cloud
+        for box in boxes:
+            if "bottle" not in box.label and "cup" not in box.label:
+                rospy.loginfo("skipping non bottle/cup objects: %s", box.label)
+                continue
+
+            cropped_coord = crop_cloud_to_xyz(cloud_msg, box)
+            mean_coord = np.nanmean(np.reshape(cropped_coord, (-1, 3)), axis=0)
+
+            obj_pose = PoseStamped()
+            obj_pose.header = cloud_msg.header
+            obj_pose.pose.position.x = mean_coord[0]
+            obj_pose.pose.position.y = mean_coord[1]
+            obj_pose.pose.position.z = mean_coord[2]
+            try:
+                common_time = self._tf_listener.getLatestCommonTime(self._target_frame, cloud_msg.header.frame_id)
+                cloud_msg.header.stamp = common_time
+                self._tf_listener.waitForTransform(self._target_frame, cloud_msg.header.frame_id,
+                                                   cloud_msg.header.stamp, rospy.Duration(1))
+
+                obj_pose = self._tf_listener.transformPose(self._target_frame, obj_pose)
+            except(tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+                rospy.logerr('Unable to transform %s -> %s' % (obj_pose.header.frame_id, self._target_frame))
+
+            rospy.loginfo('label {0}: coord mean (frame {1}): x={2}, y={3}, z={4}'
+                          .format(box.label, obj_pose.header.frame_id, obj_pose.pose.position.x,
+                                  obj_pose.pose.position.y, obj_pose.pose.position.z))
+
+            if obj_pose.pose.position.x > 0.9:
+                rospy.loginfo('skipping far away object')
+                continue
+
+            if obj_pose.pose.position.z < 0.7:
+                rospy.loginfo('skipping low object')
+                continue
+
+            goal = PickupGoal()
+            goal.pose = obj_pose
+            goal.closed_gripper_joint_values = [-0.3]
+
+            self._client.send_goal(goal)
+            self._client.wait_for_result()
+
+            rospy.loginfo(self._client.get_result())
+
+
+def main(service_name, cloud_topic, result_topic, class_annotation_file, target_frame):
+
+    # wait for service to come up
+    rospy.loginfo("waiting for detection service")
+    rospy.wait_for_service(service_name, timeout=15.0)
+    try:
+        detection_client = rospy.ServiceProxy(service_name, DetectImage)
+    except rospy.ServiceException as e:
+        rospy.logerr('failed to get proxy for service "{0}": {1}'.format(service_name, e.message))
+        raise
+
+    # create publisher for image result
+    result_pub = rospy.Publisher(result_topic, ImageMsg, queue_size=1)
+
+    # read classes and create color dictionary for them
+    with open(class_annotation_file, 'r') as infile:
+        classes = yaml.load(infile)
+    color_dict = bgr_dict_from_classes(classes.values())
+
+    # handle image directory case
+    CloudTopicHandler(cloud_topic, detection_client, result_pub, color_dict, target_frame)
+
+if __name__ == '__main__':
+    rospy.init_node('grasp_planner_action_client')
+    # get service name and result topic
+    service_name = rospy.get_param('~service_name', '~detect_image')
+    result_topic = rospy.get_param('~result_topic', '~result_image')
+    target_frame = rospy.get_param('~target_frame', 'base_link')
+
+    # read image directory
+    cloud_topic = rospy.get_param('~cloud_topic', None)
+    if not cloud_topic:
+        raise ValueError('no valid cloud topic specified')
+
+    # get parameters for detector class
+    class_annotation_file = rospy.get_param('~class_annotations', None)
+    if class_annotation_file is None:
+        raise ValueError('"~class_annotations" not specified')
+    if not os.path.exists(class_annotation_file):
+        raise ValueError('"~class_annotations" file does not exist: ' + class_annotation_file)
+
+    main(service_name, cloud_topic, result_topic, class_annotation_file, target_frame)
+
+    rospy.spin()

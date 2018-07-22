@@ -5,6 +5,7 @@ add_compile_options(-std=c++11)
 
 find_package(catkin REQUIRED COMPONENTS
   gqcnn
+  mdr_pickup_action
   mas_perception_libs
   mcr_perception_msgs
   message_filters
@@ -13,6 +14,7 @@ find_package(catkin REQUIRED COMPONENTS
   visualization_msgs
   roslint
   roscpp
+  rospy
 )
 
 find_package(OpenCV REQUIRED)

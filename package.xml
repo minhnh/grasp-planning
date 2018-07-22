@@ -13,6 +13,7 @@
   <buildtool_depend>catkin</buildtool_depend>
 
   <build_depend>gqcnn</build_depend>
+  <build_depend>mdr_pickup_action</build_depend>
   <build_depend>mas_perception_libs</build_depend>
   <build_depend>mcr_perception_msgs</build_depend>
   <build_depend>message_filters</build_depend>
@@ -23,5 +24,6 @@
   <exec_depend>ssd_keras_ros</exec_depend>
 
   <depend>roscpp</depend>
+  <depend>rospy</depend>
 
 </package>

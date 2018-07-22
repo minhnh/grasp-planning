@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="namespace" default="grasp_planning" />
+    <arg name="cloud_topic" default="/camera/depth_registered/image_raw"/>
+    <arg name="result_topic" default="result_topic"/>
+    <arg name="target_frame" default="base_link" />
+    <!-- image detection service -->
+    <arg name="detection_service_name" default="/mas_perception/detect_image"/>
+    <arg name="class_annotations" default="$(find ssd_keras_ros)/models/coco_classes.yml" />
+    <arg name="kwargs_file" default="$(find ssd_keras_ros)/models/ssd_keras_object_detector_kwargs.yml" />
+    <arg name="detection_module" default="ssd_keras_ros" />
+    <arg name="detection_class" default="SSDKerasObjectDetector" />
+
+    <node pkg="grasp_planning" type="grasp_planner_action_client" name="grasp_planner_action_client" output="screen">
+        <param name="service_name" type="string" value="$(arg detection_service_name)" />
+        <param name="target_frame" type="string" value="$(arg target_frame)" />
+        <param name="result_topic" type="string" value="$(arg result_topic)" />
+        <param name="cloud_topic" type="string" value="$(arg cloud_topic)" />
+        <param name="class_annotations" type="string" value="$(arg class_annotations)" />
+    </node>
+
+    <include file="$(find mas_perception_libs)/ros/launch/image_detection.launch" >
+        <arg name="service_name" value="$(arg detection_service_name)" />
+        <arg name="class_annotations" value="$(arg class_annotations)" />
+        <arg name="kwargs_file" value="$(arg kwargs_file)" />
+        <arg name="detection_module" value="$(arg detection_module)" />
+        <arg name="detection_class" value="$(arg detection_class)" />
+    </include>
+</launch>
