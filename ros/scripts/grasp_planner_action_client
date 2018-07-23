@@ -13,7 +13,8 @@ from std_msgs.msg import String as StringMsg
 from mdr_pickup_action.msg import PickupAction, PickupGoal
 from mcr_perception_msgs.srv import DetectImage, DetectImageRequest
 from mas_perception_libs import ImageDetector
-from mas_perception_libs.utils import cloud_msg_to_image_msg, crop_organized_cloud_msg, crop_cloud_to_xyz
+from mas_perception_libs.utils import cloud_msg_to_image_msg, crop_organized_cloud_msg, crop_cloud_to_xyz, \
+    transform_point_cloud
 from mas_perception_libs.visualization import draw_labeled_boxes_img_msg, bgr_dict_from_classes
 
 
@@ -33,16 +34,19 @@ def request_single_image_detection(detection_client, img_msg):
 
 
 class TopicHandler(object):
-    def __init__(self, detection_client, result_pub, color_dict):
+    def __init__(self, detection_client, result_pub, color_dict, timeout=1.0):
         self._detection_client = detection_client
         self._result_pub = result_pub
         self._color_dict = color_dict
         self._cv_bridge = CvBridge()
 
         self._client = SimpleActionClient('/pickup_server', PickupAction)
-        self._client.wait_for_server()
+        rospy.loginfo("waiting for pickup action server")
+        if not self._client.wait_for_server(rospy.Duration(timeout)):
+            raise RuntimeError("failed to wait for pickup action server after {0} second(s)".format(timeout))
         self._event_sub = rospy.Subscriber("~event_in", StringMsg, self._event_in_cb)
         self._triggered = False
+        self._timeout = timeout
 
     def _event_in_cb(self, _):
         self._triggered = True
@@ -59,6 +63,7 @@ class CloudTopicHandler(TopicHandler):
     def _cloud_callback(self, cloud_msg):
         if not self._triggered:
             rospy.loginfo("not triggered")
+            rospy.sleep(0.5)
             return
         self._triggered = False
 
@@ -77,6 +82,18 @@ class CloudTopicHandler(TopicHandler):
         drawn_img_msg = draw_labeled_boxes_img_msg(self._cv_bridge, img_msg, boxes)
         self._result_pub.publish(drawn_img_msg)
 
+        # lookup transformation matrix
+        try:
+            common_time = self._tf_listener.getLatestCommonTime(self._target_frame, cloud_msg.header.frame_id)
+            cloud_msg.header.stamp = common_time
+            self._tf_listener.waitForTransform(self._target_frame, cloud_msg.header.frame_id,
+                                               cloud_msg.header.stamp, rospy.Duration(1))
+            tf_matrix = self._tf_listener.asMatrix(self._target_frame, cloud_msg.header)
+        except(tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+            rospy.logerr('Unable to transform %s -> %s' % (cloud_msg.header.frame_id, self._target_frame))
+            return
+        cloud_msg = transform_point_cloud(cloud_msg, tf_matrix)
+
         # crop point cloud
         for box in boxes:
             if "bottle" not in box.label and "cup" not in box.label:
@@ -91,15 +108,6 @@ class CloudTopicHandler(TopicHandler):
             obj_pose.pose.position.x = mean_coord[0]
             obj_pose.pose.position.y = mean_coord[1]
             obj_pose.pose.position.z = mean_coord[2]
-            try:
-                common_time = self._tf_listener.getLatestCommonTime(self._target_frame, cloud_msg.header.frame_id)
-                cloud_msg.header.stamp = common_time
-                self._tf_listener.waitForTransform(self._target_frame, cloud_msg.header.frame_id,
-                                                   cloud_msg.header.stamp, rospy.Duration(1))
-
-                obj_pose = self._tf_listener.transformPose(self._target_frame, obj_pose)
-            except(tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
-                rospy.logerr('Unable to transform %s -> %s' % (obj_pose.header.frame_id, self._target_frame))
 
             rospy.loginfo('label {0}: coord mean (frame {1}): x={2}, y={3}, z={4}'
                           .format(box.label, obj_pose.header.frame_id, obj_pose.pose.position.x,
@@ -118,7 +126,9 @@ class CloudTopicHandler(TopicHandler):
             goal.closed_gripper_joint_values = [-0.3]
 
             self._client.send_goal(goal)
-            self._client.wait_for_result()
+            if not self._client.wait_for_result(rospy.Duration(self._timeout)):
+                rospy.logwarn("failed to wait for pickup action server after {0} second(s)".format(self._timeout))
+                continue
 
             rospy.loginfo(self._client.get_result())
 
@@ -145,25 +155,26 @@ def main(service_name, cloud_topic, result_topic, class_annotation_file, target_
     # handle image directory case
     CloudTopicHandler(cloud_topic, detection_client, result_pub, color_dict, target_frame)
 
+
 if __name__ == '__main__':
     rospy.init_node('grasp_planner_action_client')
     # get service name and result topic
-    service_name = rospy.get_param('~service_name', '~detect_image')
-    result_topic = rospy.get_param('~result_topic', '~result_image')
-    target_frame = rospy.get_param('~target_frame', 'base_link')
+    param_service_name = rospy.get_param('~service_name', '~detect_image')
+    param_result_topic = rospy.get_param('~result_topic', '~result_image')
+    param_target_frame = rospy.get_param('~target_frame', 'base_link')
 
     # read image directory
-    cloud_topic = rospy.get_param('~cloud_topic', None)
-    if not cloud_topic:
+    param_cloud_topic = rospy.get_param('~cloud_topic', None)
+    if not param_cloud_topic:
         raise ValueError('no valid cloud topic specified')
 
     # get parameters for detector class
-    class_annotation_file = rospy.get_param('~class_annotations', None)
-    if class_annotation_file is None:
+    param_class_annotation_file = rospy.get_param('~class_annotations', None)
+    if param_class_annotation_file is None:
         raise ValueError('"~class_annotations" not specified')
-    if not os.path.exists(class_annotation_file):
-        raise ValueError('"~class_annotations" file does not exist: ' + class_annotation_file)
+    if not os.path.exists(param_class_annotation_file):
+        raise ValueError('"~class_annotations" file does not exist: ' + param_class_annotation_file)
 
-    main(service_name, cloud_topic, result_topic, class_annotation_file, target_frame)
+    main(param_service_name, param_cloud_topic, param_result_topic, param_class_annotation_file, param_target_frame)
 
     rospy.spin()
