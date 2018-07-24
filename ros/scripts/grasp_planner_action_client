@@ -92,7 +92,7 @@ class CloudTopicHandler(TopicHandler):
         except(tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
             rospy.logerr('Unable to transform %s -> %s' % (cloud_msg.header.frame_id, self._target_frame))
             return
-        cloud_msg = transform_point_cloud(cloud_msg, tf_matrix)
+        cloud_msg = transform_point_cloud(cloud_msg, tf_matrix, self._target_frame)
 
         # crop point cloud
         for box in boxes:
@@ -108,6 +108,11 @@ class CloudTopicHandler(TopicHandler):
             obj_pose.pose.position.x = mean_coord[0]
             obj_pose.pose.position.y = mean_coord[1]
             obj_pose.pose.position.z = mean_coord[2]
+            # set orientation to facing table for experiments
+            obj_pose.pose.orientation.x = 0.5
+            obj_pose.pose.orientation.y = -0.5
+            obj_pose.pose.orientation.z = 0.5
+            obj_pose.pose.orientation.w = 0.5
 
             rospy.loginfo('label {0}: coord mean (frame {1}): x={2}, y={3}, z={4}'
                           .format(box.label, obj_pose.header.frame_id, obj_pose.pose.position.x,
@@ -126,10 +131,7 @@ class CloudTopicHandler(TopicHandler):
             goal.closed_gripper_joint_values = [-0.3]
 
             self._client.send_goal(goal)
-            if not self._client.wait_for_result(rospy.Duration(self._timeout)):
-                rospy.logwarn("failed to wait for pickup action server after {0} second(s)".format(self._timeout))
-                continue
-
+            self._client.wait_for_result()
             rospy.loginfo(self._client.get_result())
 
 

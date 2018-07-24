@@ -3,7 +3,7 @@
     <arg name="namespace" default="grasp_planning" />
     <arg name="cloud_topic" default="/camera/depth_registered/image_raw"/>
     <arg name="result_topic" default="result_topic"/>
-    <arg name="target_frame" default="base_link" />
+    <arg name="target_frame" default="odom" />
     <!-- image detection service -->
     <arg name="detection_service_name" default="/mas_perception/detect_image"/>
     <arg name="class_annotations" default="$(find ssd_keras_ros)/models/coco_classes.yml" />
