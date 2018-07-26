@@ -9,23 +9,32 @@
 #include <future>   // NOLINT
 #include <chrono>   // NOLINT
 #include <ros/ros.h>
+#include <geometry_msgs/PoseStamped.h>
+#include <std_msgs/Header.h>
+#include <tf/transform_listener.h>
 #include <image_transport/subscriber_filter.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <mcr_perception_msgs/DetectImage.h>
 #include <mcr_perception_msgs/BoundingBox2D.h>
 #include <mas_perception_libs/image_bounding_box.h>
+#include <mdr_pickup_action/PickupAction.h>
 #include <gqcnn/GQCNNGraspPlanner.h>
 #include <gqcnn/BoundingBox.h>
 #include <grasp_planning/image_detection_gqcnn_node.h>
 
 namespace mpl = mas_perception_libs;
 
+const std::string ImageDetectionGQCNNNode::cAllowedLabels[] = { "bottle", "cup", "remote", "vase", "cake" };
+
 ImageDetectionGQCNNNode::ImageDetectionGQCNNNode(const ros::NodeHandle& pNodeHandle, std::string pRgbImgTopic,
                                                  std::string pDepthImgTopic, std::string pCameraInfoTopic,
-                                                 std::string pDetectService, std::string pGqcnnService, int pWaitTime)
+                                                 std::string pDetectService, std::string pGqcnnService,
+                                                 std::string pPickupActionServer, const std::string& pTargetFrame,
+                                                 int pWaitTime)
         : mNodeHandle(pNodeHandle), mImageTransport(mNodeHandle), mRgbImageSub(mImageTransport, pRgbImgTopic, 1),
           mDepthImageSub(mImageTransport, pDepthImgTopic, 1), mCameraInfoSub(mNodeHandle, pCameraInfoTopic, 1),
-          mSync(ImagePolicy(1), mRgbImageSub, mDepthImageSub, mCameraInfoSub), mWaitTime(pWaitTime)
+          mSync(ImagePolicy(1), mRgbImageSub, mDepthImageSub, mCameraInfoSub), mPickupClient(pPickupActionServer),
+          mTargetFrame(pTargetFrame), mWaitTime(pWaitTime)
 {
     ROS_INFO("waiting for image detection service: %s", pDetectService.c_str());
     mDetectionClient = mNodeHandle.serviceClient<mcr_perception_msgs::DetectImage>(pDetectService);
@@ -42,6 +51,14 @@ ImageDetectionGQCNNNode::ImageDetectionGQCNNNode(const ros::NodeHandle& pNodeHan
     {
         std::stringstream message;
         message << "failed to wait for service: " << pGqcnnService;
+        throw std::runtime_error(message.str());
+    }
+
+    ROS_INFO("waiting for pickup action server: %s", pPickupActionServer.c_str());
+    if (!mPickupClient.waitForServer(ros::Duration(pWaitTime)))
+    {
+        std::stringstream message;
+        message << "failed to wait for pickup action server: " << pPickupActionServer;
         throw std::runtime_error(message.str());
     }
 
@@ -78,9 +95,17 @@ ImageDetectionGQCNNNode::syncCallback(const sm::ImageConstPtr& pRgbImagePtr, con
     std::vector<size_t> selectedBoxIndices;
     for (size_t i = 0; i < detectionResult.detections[0].classes.size(); i++)
     {
-        // skipping tables TODO(minhnh): limit to a list of graspable objects
-        if (detectionResult.detections[0].classes[i].find("table") != std::string::npos)
+        bool graspable = false;
+        for (auto & allowedLabel : cAllowedLabels)
         {
+            if (detectionResult.detections[0].classes[i].find(allowedLabel) != std::string::npos)
+            {
+                graspable = true;
+            }
+        }
+        if (!graspable)
+        {
+            ROS_INFO("skipping ungraspable object: %s", detectionResult.detections[0].classes[i].c_str());
             continue;
         }
 
@@ -104,8 +129,10 @@ ImageDetectionGQCNNNode::syncCallback(const sm::ImageConstPtr& pRgbImagePtr, con
         selectedBoxIndices.push_back(i);
         gqcnnGrasps.push_back(gqcnnCall.get());
     }
-    ROS_INFO("finished planning %lu grasps", selectedBoxIndices.size());
+    ROS_INFO("finished planning %lu grasps, executing grasps...", selectedBoxIndices.size());
+    executeGrasps(gqcnnGrasps, detectionResult.detections[0], selectedBoxIndices, pCamInfoPtr->header);
 
+    ROS_INFO("visualizing grasp and objects");
     visualizeGraspsAndObjects(pRgbImagePtr, gqcnnGrasps, detectionResult.detections[0], selectedBoxIndices,
                               pCamInfoPtr->header.frame_id);
 }
@@ -132,6 +159,83 @@ ImageDetectionGQCNNNode::requestGqcnnService(const gqcnn::GQCNNGraspPlannerReque
         ROS_WARN("failed to call GQCNN service");
     }
     return gqcnnSrv.response.grasp;
+}
+
+void
+ImageDetectionGQCNNNode::executeGrasps(const std::vector<gqcnn::GQCNNGrasp> &pGrasps,
+                                       const mpm::ImageDetection &pDetection, const std::vector<size_t>& pBoxIndices,
+                                       const std_msgs::Header& pHeader, double pGraspConfThreshold)
+{
+    try
+    {
+        mTfListener.waitForTransform(mTargetFrame, pHeader.frame_id,
+                                     pHeader.stamp, ros::Duration(1.0));
+    }
+    catch (tf::TransformException &ex)
+    {
+        ROS_ERROR("failed to wait for transform from frame '%s' to frame '%s': %s",
+                  pHeader.frame_id.c_str(), mTargetFrame.c_str(), ex.what());
+        return;
+    }
+
+    for (size_t i = 0; i < pBoxIndices.size(); i++)
+    {
+        if (pGrasps[i].grasp_success_prob < pGraspConfThreshold)
+        {
+            ROS_INFO("skipping grasp for '%s' because of low confidence threshold", pDetection.classes[i].c_str());
+            continue;
+        }
+
+        geometry_msgs::PoseStamped objPose, transformedPose;
+        objPose.header = pHeader;
+        objPose.pose = pGrasps[i].pose;
+        try
+        {
+            mTfListener.transformPose(mTargetFrame, objPose, transformedPose);
+        }
+        catch (tf::TransformException &ex)
+        {
+            ROS_ERROR("unable to transform pose of object '%s' from frame '%s' to frame '%s': %s",
+                      pDetection.classes[i].c_str(), pHeader.frame_id.c_str(), mTargetFrame.c_str(), ex.what());
+            continue;
+        }
+
+//        // set orientation to facing table for experiments
+//        objPose.pose.orientation.x = 0.5
+//        objPose.pose.orientation.y = -0.5
+//        objPose.pose.orientation.z = 0.5
+//        objPose.pose.orientation.w = 0.5
+
+        ROS_INFO("label %s: coord mean (frame {%s}): x=%.3f, y=%.3f, z=%.3f",
+                 pDetection.classes[i].c_str(), objPose.header.frame_id.c_str(), objPose.pose.position.x,
+                 objPose.pose.position.y, objPose.pose.position.z);
+
+        if (objPose.pose.position.x > 0.9)
+        {
+            ROS_INFO("skipping far away object");
+            continue;
+        }
+
+        if (objPose.pose.position.z < 0.7)
+        {
+            ROS_INFO("skipping low object");
+            continue;
+        }
+
+        // send actionlib goal
+        mdr_pickup_action::PickupGoal goal;
+        goal.pose = transformedPose;
+        goal.closed_gripper_joint_values.push_back(-0.3f);
+        mPickupClient.sendGoal(goal);
+        if (!mPickupClient.waitForResult(ros::Duration(mWaitTime.count())))
+        {
+            ROS_ERROR("failed to wait for pickup action result");
+            continue;
+        }
+
+        auto result = mPickupClient.getState();
+        ROS_INFO("pickup action finished: %s", result.toString().c_str());
+    }
 }
 
 void
@@ -217,7 +321,8 @@ int main(int argc, char** argv)
     ros::init(argc, argv, "grasp_planning_node");
     ros::NodeHandle nh("~");
 
-    std::string rgbImgTopic, depthImgTopic, detectService, cameraInfoTopic, gqcnnService;
+    std::string rgbImgTopic, depthImgTopic, detectService, cameraInfoTopic, gqcnnService,
+                pickupActionServer, target_frame;
     if (!nh.getParam("rgb_image_topic", rgbImgTopic))
     {
         ROS_ERROR("No RGB image topic specified as parameter");
@@ -238,16 +343,26 @@ int main(int argc, char** argv)
         ROS_ERROR("No detection service name specified as parameter");
         return EXIT_FAILURE;
     }
+    if (!nh.getParam("pickup_action_server", pickupActionServer))
+    {
+        ROS_ERROR("No pickup action server name specified as parameter");
+        return EXIT_FAILURE;
+    }
     if (!nh.getParam("gqcnn_service_name", gqcnnService))
     {
         ROS_ERROR("No GQCNN service name specified as parameter");
         return EXIT_FAILURE;
     }
+    if (!nh.getParam("target_frame", target_frame))
+    {
+        ROS_ERROR("No target frame for grasping specified as parameter");
+        return EXIT_FAILURE;
+    }
     int waitTime;
     nh.param<int>("service_wait_time", waitTime, 10);
 
-    ImageDetectionGQCNNNode graspDetectionNode(nh, rgbImgTopic, depthImgTopic, cameraInfoTopic,
-                                               detectService, gqcnnService, waitTime);
+    ImageDetectionGQCNNNode graspDetectionNode(nh, rgbImgTopic, depthImgTopic, cameraInfoTopic, detectService,
+                                               gqcnnService, pickupActionServer, target_frame, waitTime);
     while (ros::ok())
     {
         ros::spin();
