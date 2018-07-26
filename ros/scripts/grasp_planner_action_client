@@ -18,6 +18,9 @@ from mas_perception_libs.utils import cloud_msg_to_image_msg, crop_organized_clo
 from mas_perception_libs.visualization import draw_labeled_boxes_img_msg, bgr_dict_from_classes
 
 
+ALLOWED_LABELS = ['bottle', 'cup', 'remote', 'vase', 'cake']
+
+
 def request_single_image_detection(detection_client, img_msg):
     # send request and get response
     request = DetectImageRequest()
@@ -83,21 +86,27 @@ class CloudTopicHandler(TopicHandler):
         self._result_pub.publish(drawn_img_msg)
 
         # lookup transformation matrix
-        try:
-            common_time = self._tf_listener.getLatestCommonTime(self._target_frame, cloud_msg.header.frame_id)
-            cloud_msg.header.stamp = common_time
-            self._tf_listener.waitForTransform(self._target_frame, cloud_msg.header.frame_id,
-                                               cloud_msg.header.stamp, rospy.Duration(1))
-            tf_matrix = self._tf_listener.asMatrix(self._target_frame, cloud_msg.header)
-        except(tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
-            rospy.logerr('Unable to transform %s -> %s' % (cloud_msg.header.frame_id, self._target_frame))
-            return
-        cloud_msg = transform_point_cloud(cloud_msg, tf_matrix, self._target_frame)
+        #try:
+        #    common_time = self._tf_listener.getLatestCommonTime(self._target_frame, cloud_msg.header.frame_id)
+        #    cloud_msg.header.stamp = common_time
+        #    self._tf_listener.waitForTransform(self._target_frame, cloud_msg.header.frame_id,
+        #                                       cloud_msg.header.stamp, rospy.Duration(1))
+        #    tf_matrix = self._tf_listener.asMatrix(self._target_frame, cloud_msg.header)
+        #except(tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+        #    rospy.logerr('Unable to transform %s -> %s' % (cloud_msg.header.frame_id, self._target_frame))
+        #    return
+        #cloud_msg = transform_point_cloud(cloud_msg, tf_matrix, self._target_frame)
 
         # crop point cloud
         for box in boxes:
-            if "bottle" not in box.label and "cup" not in box.label:
-                rospy.loginfo("skipping non bottle/cup objects: %s", box.label)
+            allowed = False
+            for allowed_label in ALLOWED_LABELS:
+                if allowed_label in box.label:
+                    allowed = True
+                    break
+
+            if not allowed:
+                rospy.loginfo("skipping unallowed object: %s", box.label)
                 continue
 
             cropped_coord = crop_cloud_to_xyz(cloud_msg, box)
@@ -113,6 +122,17 @@ class CloudTopicHandler(TopicHandler):
             obj_pose.pose.orientation.y = -0.5
             obj_pose.pose.orientation.z = 0.5
             obj_pose.pose.orientation.w = 0.5
+
+            try:
+                common_time = self._tf_listener.getLatestCommonTime(self._target_frame, cloud_msg.header.frame_id)
+                cloud_msg.header.stamp = common_time
+                self._tf_listener.waitForTransform(self._target_frame, cloud_msg.header.frame_id,
+                                                   cloud_msg.header.stamp, rospy.Duration(1))
+
+                obj_pose = self._tf_listener.transformPose(self._target_frame, obj_pose)
+            except(tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+                rospy.logerr('Unable to transform %s -> %s' % (obj_pose.header.frame_id, self._target_frame))
+                continue
 
             rospy.loginfo('label {0}: coord mean (frame {1}): x={2}, y={3}, z={4}'
                           .format(box.label, obj_pose.header.frame_id, obj_pose.pose.position.x,
