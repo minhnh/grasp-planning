@@ -9,6 +9,7 @@
 
 #include <string>
 #include <vector>
+#include <unordered_set>
 #include <chrono>   // NOLINT
 #include <ros/ros.h>
 #include <actionlib/client/simple_action_client.h>
@@ -31,13 +32,29 @@ namespace sm = sensor_msgs;
 namespace it = image_transport;
 namespace mpm = mcr_perception_msgs;
 
-class ImageDetectionGQCNNNode
+struct GraspConfigs
 {
 public:
-    ImageDetectionGQCNNNode(const ros::NodeHandle&, std::string, std::string, std::string,
-                            std::string, std::string, std::string, const std::string&, int);
+    GraspConfigs() : mGripperLinkOffset(0.0f), mMinGraspHeight(0.0f), mMaxGraspReach(0.0f), mMaxWorkspaceDist(0.0f),
+                     mMaxGraspNumber(0)
+    { }
 
-    ~ImageDetectionGQCNNNode() = default;
+public:
+    std::unordered_set<std::string> mGraspableObjects;
+    float mGripperLinkOffset;
+    float mMinGraspHeight;
+    float mMaxGraspReach;
+    float mMaxWorkspaceDist;
+    int mMaxGraspNumber;
+};
+
+class GraspPlannerGQCNNNode
+{
+public:
+    GraspPlannerGQCNNNode(const ros::NodeHandle&, std::string, std::string, std::string,
+                          std::string, std::string, std::string, const GraspConfigs& pConfigs, const std::string&, int);
+
+    ~GraspPlannerGQCNNNode() = default;
 
     void
     syncCallback(const sm::ImageConstPtr&, const sm::ImageConstPtr&, const sm::CameraInfoConstPtr&);
@@ -65,11 +82,7 @@ private:
     const std::string cGraspMarkerTopic = "grasp_markers";
     const std::string cMarkerNamespace = "gqcnn_grasps";
     const std::string cBoxImageTopic = "detection_image";
-    const std::string cCartsianControlTopic = "/dmp_executor/pickup_goal";
-    static const std::string cAllowedLabels[];
     static constexpr double sDefaultGraspConfThreshold = 0.01;
-    static constexpr double cTableHeight = 0.78;
-    static constexpr double cGripperLinkOffset = 0.04;
 
 private:
     ros::NodeHandle mNodeHandle;
@@ -93,6 +106,7 @@ private:
     // https://github.com/ros/ros_comm/issues/720
     mf::Synchronizer<ImagePolicy> mSync;
 
+    GraspConfigs mConfigs;
     std::chrono::seconds mWaitTime;
     std::string mTargetFrame;
     bool mTriggered;

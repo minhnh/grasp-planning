@@ -14,6 +14,8 @@
     <!-- pickup action -->
     <arg name="pickup_action_server" default="/pickup_server" />
     <arg name="target_frame" default="base_link" />
+    <!-- grasp related -->
+    <arg name="grasp_config_file" default="$(find grasp_planning)/config/grasp_constraints.yaml" />
 
     <node pkg="grasp_planning" type="image_detection_gqcnn_node" name="image_detection_gqcnn_node" output="screen"
           ns="$(arg namespace)">
@@ -28,6 +30,8 @@
         <!-- pickup action server -->
         <param name="pickup_action_server" type="string" value="$(arg pickup_action_server)" />
         <param name="target_frame" type="string" value="$(arg target_frame)" />
+        <!-- grasp config file -->
+        <param name="grasp_config_file" type="string" value="$(arg grasp_config_file)" />
     </node>
 
     <include file="$(find mas_perception_libs)/ros/launch/image_detection.launch" >

@@ -18,12 +18,8 @@ from mas_perception_libs.utils import cloud_msg_to_image_msg, crop_organized_clo
 from mas_perception_libs.visualization import draw_labeled_boxes_img_msg, bgr_dict_from_classes
 
 
-ALLOWED_LABELS = ['bottle', 'cup', 'remote', 'vase', 'cake', 'ball', 'orange', 'apple', 'handbag', 'bowl',
-                  'teddy bear']
-GRIPPER_LINK_OFFSET = 0.04      # meter
-TABLE_HEIGHT = 0.78             # meter
-MAXIMUM_DIST_ADJUST = 0.75      # meter
-MAXIMUM_WORKSPACE_DIST = 0.9
+REQUIRED_GRASP_CONFIGS = ['maximum_grasp_reach', 'minimum_grasp_height', 'maximum_grasp_number', 'graspable_objects',
+                          'gripper_link_offset', 'maximum_workspace_distance']
 
 
 def request_single_image_detection(detection_client, img_msg):
@@ -42,17 +38,35 @@ def request_single_image_detection(detection_client, img_msg):
 
 
 class TopicHandler(object):
-    def __init__(self, detection_client, result_pub, color_dict, timeout=1.0):
+    def __init__(self, detection_client, result_pub, color_dict, grasp_config, target_frame, timeout=5):
         self._detection_client = detection_client
         self._result_pub = result_pub
         self._color_dict = color_dict
         self._cv_bridge = CvBridge()
 
-        self._client = SimpleActionClient('/pickup_server', PickupAction)
-        rospy.loginfo("waiting for pickup action server")
-        if not self._client.wait_for_server(rospy.Duration(timeout)):
-            raise RuntimeError("failed to wait for pickup action server after {0} second(s)".format(timeout))
+        for config_name in REQUIRED_GRASP_CONFIGS:
+            if config_name not in grasp_config:
+                raise RuntimeError('required configuration not specified in config file: ' + config_name)
+
+        self._allowed_objects = grasp_config['graspable_objects']
+        self._max_grasp_reach = grasp_config['maximum_grasp_reach']
+        self._min_grasp_height = grasp_config['minimum_grasp_height']
+        self._gripper_link_offset = grasp_config['gripper_link_offset']
+        self._max_workspace_dist = grasp_config['maximum_workspace_distance']
+        self._max_grasp_num = grasp_config['maximum_grasp_number']
+
+        if self._max_grasp_num > 0:
+            self._client = SimpleActionClient('/pickup_server', PickupAction)
+            rospy.loginfo("waiting for pickup action server")
+            if not self._client.wait_for_server(rospy.Duration(timeout)):
+                raise RuntimeError("failed to wait for pickup action server after {0} second(s)".format(timeout))
+        else:
+            self._client = None
+
         self._event_sub = rospy.Subscriber("~event_in", StringMsg, self._event_in_cb)
+
+        self._target_frame = target_frame
+        self._tf_listener = tf.TransformListener()
 
         self._triggered = False
         self._timeout = timeout
@@ -62,12 +76,10 @@ class TopicHandler(object):
 
 
 class CloudTopicHandler(TopicHandler):
-    def __init__(self, cloud_topic_name, detection_client, result_pub, color_dict, target_frame):
-        super(CloudTopicHandler, self).__init__(detection_client, result_pub, color_dict)
+    def __init__(self, cloud_topic_name, detection_client, result_pub, color_dict, grasp_config, target_frame):
+        super(CloudTopicHandler, self).__init__(detection_client, result_pub, color_dict, grasp_config, target_frame)
         rospy.loginfo("cloud topic %s", cloud_topic_name)
         self._cloud_sub = rospy.Subscriber(cloud_topic_name, PointCloud2, self._cloud_callback)
-        self._target_frame = target_frame
-        self._tf_listener = tf.TransformListener()
 
     def _cloud_callback(self, cloud_msg):
         if not self._triggered:
@@ -101,12 +113,14 @@ class CloudTopicHandler(TopicHandler):
         except(tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
             rospy.logerr('Unable to transform %s -> %s' % (cloud_msg.header.frame_id, self._target_frame))
             return
+
         transformed_cloud_msg = transform_point_cloud(cloud_msg, tf_matrix, self._target_frame)
 
         # crop point cloud
+        grasp_exec_count = 0
         for box in boxes:
             allowed = False
-            for allowed_label in ALLOWED_LABELS:
+            for allowed_label in self._allowed_objects:
                 if allowed_label in box.label:
                     allowed = True
                     break
@@ -128,16 +142,17 @@ class CloudTopicHandler(TopicHandler):
             post_tf_cropped_coord = crop_cloud_to_xyz(cloud_msg, box)
             post_tf_mean_coord = np.nanmean(np.reshape(post_tf_cropped_coord, (-1, 3)), axis=0)
             post_tf_obj_pose = PoseStamped()
-            post_tf_obj_pose.header = transformed_cloud_msg.header
+            post_tf_obj_pose.header = cloud_msg.header
             post_tf_obj_pose.pose.position.x = post_tf_mean_coord[0]
             post_tf_obj_pose.pose.position.y = post_tf_mean_coord[1]
             post_tf_obj_pose.pose.position.z = post_tf_mean_coord[2]
 
             try:
-                common_time = self._tf_listener.getLatestCommonTime(self._target_frame, cloud_msg.header.frame_id)
-                cloud_msg.header.stamp = common_time
-                self._tf_listener.waitForTransform(self._target_frame, cloud_msg.header.frame_id,
-                                                   cloud_msg.header.stamp, rospy.Duration(1))
+                common_time = self._tf_listener.getLatestCommonTime(self._target_frame,
+                                                                    post_tf_obj_pose.header.frame_id)
+                post_tf_obj_pose.header.stamp = common_time
+                self._tf_listener.waitForTransform(self._target_frame, post_tf_obj_pose.header.frame_id,
+                                                   post_tf_obj_pose.header.stamp, rospy.Duration(1))
 
                 post_tf_obj_pose = self._tf_listener.transformPose(self._target_frame, post_tf_obj_pose)
             except(tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
@@ -160,19 +175,25 @@ class CloudTopicHandler(TopicHandler):
             obj_pose.pose.orientation.z = 0.5
             obj_pose.pose.orientation.w = 0.5
 
-            if obj_pose.pose.position.x > MAXIMUM_WORKSPACE_DIST:
+            if obj_pose.pose.position.x > self._max_workspace_dist:
                 rospy.logwarn('skipping far away object')
                 continue
 
-            if obj_pose.pose.position.x > MAXIMUM_DIST_ADJUST:
-                obj_pose.pose.position.x = MAXIMUM_DIST_ADJUST
+            if obj_pose.pose.position.x > self._max_grasp_reach:
+                obj_pose.pose.position.x = self._max_grasp_reach
                 rospy.logwarn('readjusting x coord to %.3f', obj_pose.pose.position.x)
 
             # readjust x further from object
-            obj_pose.pose.position.x -= GRIPPER_LINK_OFFSET
-            if obj_pose.pose.position.z < TABLE_HEIGHT:
-                obj_pose.pose.position.z = TABLE_HEIGHT
+            obj_pose.pose.position.x -= self._gripper_link_offset
+            if obj_pose.pose.position.z < self._min_grasp_height:
+                obj_pose.pose.position.z = self._min_grasp_height
                 rospy.logwarn('readjusting height of object to %.3f', obj_pose.pose.position.z)
+
+            if grasp_exec_count >= self._max_grasp_num:
+                rospy.loginfo('exceeded number of allowed grasps ({0}), will not send action goal'
+                              .format(self._max_grasp_num))
+                continue
+            grasp_exec_count += 1
 
             goal = PickupGoal()
             goal.pose = obj_pose
@@ -182,11 +203,9 @@ class CloudTopicHandler(TopicHandler):
             self._client.send_goal(goal)
             self._client.wait_for_result()
             rospy.loginfo(self._client.get_result())
-            rospy.loginfo('stop picking objects')
-            break
 
 
-def main(service_name, cloud_topic, result_topic, class_annotation_file, target_frame):
+def main(service_name, cloud_topic, result_topic, class_annotation_file, grasp_config_file, target_frame):
 
     # wait for service to come up
     rospy.loginfo("waiting for detection service")
@@ -205,8 +224,12 @@ def main(service_name, cloud_topic, result_topic, class_annotation_file, target_
         classes = yaml.load(infile)
     color_dict = bgr_dict_from_classes(classes.values())
 
+    # read classes and create color dictionary for them
+    with open(grasp_config_file, 'r') as infile:
+        grasp_config = yaml.load(infile)
+
     # handle image directory case
-    CloudTopicHandler(cloud_topic, detection_client, result_pub, color_dict, target_frame)
+    CloudTopicHandler(cloud_topic, detection_client, result_pub, color_dict, grasp_config, target_frame)
 
 
 if __name__ == '__main__':
@@ -223,11 +246,19 @@ if __name__ == '__main__':
 
     # get parameters for detector class
     param_class_annotation_file = rospy.get_param('~class_annotations', None)
-    if param_class_annotation_file is None:
+    if not param_class_annotation_file:
         raise ValueError('"~class_annotations" not specified')
     if not os.path.exists(param_class_annotation_file):
         raise ValueError('"~class_annotations" file does not exist: ' + param_class_annotation_file)
 
-    main(param_service_name, param_cloud_topic, param_result_topic, param_class_annotation_file, param_target_frame)
+    # get grasp configuration file
+    param_grasp_config_file = rospy.get_param('~grasp_config_file', None)
+    if not param_grasp_config_file:
+        raise ValueError('"~grasp_config_file" not specified')
+    if not os.path.exists(param_grasp_config_file):
+        raise ValueError('"~grasp_config_file" file does not exist: ' + param_grasp_config_file)
+
+    main(param_service_name, param_cloud_topic, param_result_topic, param_class_annotation_file,
+         param_grasp_config_file, param_target_frame)
 
     rospy.spin()

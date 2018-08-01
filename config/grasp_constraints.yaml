@@ -1,0 +1,17 @@
+graspable_objects:
+  - 'bottle'
+  - 'cup'
+  - 'remote'
+  - 'vase'
+  - 'cake'
+  - 'ball'
+  - 'orange'
+  - 'apple'
+  - 'handbag'
+  - 'bowl'
+  - 'teddy bear'
+gripper_link_offset:        0.04    # distance between link and fingertip, (meters)
+minimum_grasp_height:       0.78    # e.g. table height (meters)
+maximum_grasp_reach:        0.75    # how far the robot can reach before collision (meters)
+maximum_workspace_distance: 0.9     # objects further than this distance will be ignored (meters)
+maximum_grasp_number:       1       # number of allowed grasp executions, if 0 will not wait for grasp action

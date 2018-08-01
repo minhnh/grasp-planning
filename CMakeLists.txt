@@ -18,6 +18,7 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 find_package(OpenCV REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 ###################################
 ## catkin specific configuration ##
@@ -45,6 +46,7 @@ add_dependencies(image_detection_gqcnn_node
   ${catkin_EXPORTED_TARGETS}
 )
 target_link_libraries(image_detection_gqcnn_node
+  yaml-cpp
   ${catkin_LIBRARIES}
   ${OpenCV_LIBRARIES}
 )

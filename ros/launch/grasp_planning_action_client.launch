@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <launch>
     <arg name="namespace" default="grasp_planning" />
-    <arg name="cloud_topic" default="/camera/depth_registered/image_raw"/>
+    <arg name="cloud_topic" default="/camera/depth_registered/points"/>
     <arg name="result_topic" default="result_topic"/>
     <arg name="target_frame" default="base_link" />
     <!-- image detection service -->
@@ -10,6 +10,8 @@
     <arg name="kwargs_file" default="$(find ssd_keras_ros)/models/ssd_keras_object_detector_kwargs.yml" />
     <arg name="detection_module" default="ssd_keras_ros" />
     <arg name="detection_class" default="SSDKerasObjectDetector" />
+    <!-- grasp related -->
+    <arg name="grasp_config_file" default="$(find grasp_planning)/config/grasp_constraints.yaml" />
 
     <node pkg="grasp_planning" type="grasp_planner_action_client" name="grasp_planner_action_client" output="screen">
         <param name="service_name" type="string" value="$(arg detection_service_name)" />
@@ -17,6 +19,7 @@
         <param name="result_topic" type="string" value="$(arg result_topic)" />
         <param name="cloud_topic" type="string" value="$(arg cloud_topic)" />
         <param name="class_annotations" type="string" value="$(arg class_annotations)" />
+        <param name="grasp_config_file" type="string" value="$(arg grasp_config_file)" />
     </node>
 
     <include file="$(find mas_perception_libs)/ros/launch/image_detection.launch" >
