@@ -18,7 +18,12 @@ from mas_perception_libs.utils import cloud_msg_to_image_msg, crop_organized_clo
 from mas_perception_libs.visualization import draw_labeled_boxes_img_msg, bgr_dict_from_classes
 
 
-ALLOWED_LABELS = ['bottle', 'cup', 'remote', 'vase', 'cake']
+ALLOWED_LABELS = ['bottle', 'cup', 'remote', 'vase', 'cake', 'ball', 'orange', 'apple', 'handbag', 'bowl',
+                  'teddy bear']
+GRIPPER_LINK_OFFSET = 0.04      # meter
+TABLE_HEIGHT = 0.78             # meter
+MAXIMUM_DIST_ADJUST = 0.75      # meter
+MAXIMUM_WORKSPACE_DIST = 0.9
 
 
 def request_single_image_detection(detection_client, img_msg):
@@ -48,6 +53,7 @@ class TopicHandler(object):
         if not self._client.wait_for_server(rospy.Duration(timeout)):
             raise RuntimeError("failed to wait for pickup action server after {0} second(s)".format(timeout))
         self._event_sub = rospy.Subscriber("~event_in", StringMsg, self._event_in_cb)
+
         self._triggered = False
         self._timeout = timeout
 
@@ -86,16 +92,16 @@ class CloudTopicHandler(TopicHandler):
         self._result_pub.publish(drawn_img_msg)
 
         # lookup transformation matrix
-        #try:
-        #    common_time = self._tf_listener.getLatestCommonTime(self._target_frame, cloud_msg.header.frame_id)
-        #    cloud_msg.header.stamp = common_time
-        #    self._tf_listener.waitForTransform(self._target_frame, cloud_msg.header.frame_id,
-        #                                       cloud_msg.header.stamp, rospy.Duration(1))
-        #    tf_matrix = self._tf_listener.asMatrix(self._target_frame, cloud_msg.header)
-        #except(tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
-        #    rospy.logerr('Unable to transform %s -> %s' % (cloud_msg.header.frame_id, self._target_frame))
-        #    return
-        #cloud_msg = transform_point_cloud(cloud_msg, tf_matrix, self._target_frame)
+        try:
+            common_time = self._tf_listener.getLatestCommonTime(self._target_frame, cloud_msg.header.frame_id)
+            cloud_msg.header.stamp = common_time
+            self._tf_listener.waitForTransform(self._target_frame, cloud_msg.header.frame_id,
+                                               cloud_msg.header.stamp, rospy.Duration(1))
+            tf_matrix = self._tf_listener.asMatrix(self._target_frame, cloud_msg.header)
+        except(tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+            rospy.logerr('Unable to transform %s -> %s' % (cloud_msg.header.frame_id, self._target_frame))
+            return
+        transformed_cloud_msg = transform_point_cloud(cloud_msg, tf_matrix, self._target_frame)
 
         # crop point cloud
         for box in boxes:
@@ -109,19 +115,23 @@ class CloudTopicHandler(TopicHandler):
                 rospy.loginfo("skipping unallowed object: %s", box.label)
                 continue
 
-            cropped_coord = crop_cloud_to_xyz(cloud_msg, box)
+            cropped_coord = crop_cloud_to_xyz(transformed_cloud_msg, box)
             mean_coord = np.nanmean(np.reshape(cropped_coord, (-1, 3)), axis=0)
+            min_coord = np.nanmin(np.reshape(cropped_coord, (-1, 3)), axis=0)
 
             obj_pose = PoseStamped()
-            obj_pose.header = cloud_msg.header
-            obj_pose.pose.position.x = mean_coord[0]
+            obj_pose.header = transformed_cloud_msg.header
+            obj_pose.pose.position.x = min_coord[0]
             obj_pose.pose.position.y = mean_coord[1]
             obj_pose.pose.position.z = mean_coord[2]
-            # set orientation to facing table for experiments
-            obj_pose.pose.orientation.x = 0.5
-            obj_pose.pose.orientation.y = -0.5
-            obj_pose.pose.orientation.z = 0.5
-            obj_pose.pose.orientation.w = 0.5
+
+            post_tf_cropped_coord = crop_cloud_to_xyz(cloud_msg, box)
+            post_tf_mean_coord = np.nanmean(np.reshape(post_tf_cropped_coord, (-1, 3)), axis=0)
+            post_tf_obj_pose = PoseStamped()
+            post_tf_obj_pose.header = transformed_cloud_msg.header
+            post_tf_obj_pose.pose.position.x = post_tf_mean_coord[0]
+            post_tf_obj_pose.pose.position.y = post_tf_mean_coord[1]
+            post_tf_obj_pose.pose.position.z = post_tf_mean_coord[2]
 
             try:
                 common_time = self._tf_listener.getLatestCommonTime(self._target_frame, cloud_msg.header.frame_id)
@@ -129,30 +139,51 @@ class CloudTopicHandler(TopicHandler):
                 self._tf_listener.waitForTransform(self._target_frame, cloud_msg.header.frame_id,
                                                    cloud_msg.header.stamp, rospy.Duration(1))
 
-                obj_pose = self._tf_listener.transformPose(self._target_frame, obj_pose)
+                post_tf_obj_pose = self._tf_listener.transformPose(self._target_frame, post_tf_obj_pose)
             except(tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
                 rospy.logerr('Unable to transform %s -> %s' % (obj_pose.header.frame_id, self._target_frame))
                 continue
+
+            diff_x = obj_pose.pose.position.x - post_tf_obj_pose.pose.position.x
+            diff_y = obj_pose.pose.position.y - post_tf_obj_pose.pose.position.y
+            diff_z = obj_pose.pose.position.z - post_tf_obj_pose.pose.position.z
 
             rospy.loginfo('label {0}: coord mean (frame {1}): x={2}, y={3}, z={4}'
                           .format(box.label, obj_pose.header.frame_id, obj_pose.pose.position.x,
                                   obj_pose.pose.position.y, obj_pose.pose.position.z))
 
-            if obj_pose.pose.position.x > 0.9:
-                rospy.loginfo('skipping far away object')
+            rospy.loginfo('pose difference: x={0}, y={1}, z={2}'
+                          .format(diff_x, diff_y, diff_z))
+            # set orientation to facing table for experiments
+            obj_pose.pose.orientation.x = 0.5
+            obj_pose.pose.orientation.y = -0.5
+            obj_pose.pose.orientation.z = 0.5
+            obj_pose.pose.orientation.w = 0.5
+
+            if obj_pose.pose.position.x > MAXIMUM_WORKSPACE_DIST:
+                rospy.logwarn('skipping far away object')
                 continue
 
-            if obj_pose.pose.position.z < 0.7:
-                rospy.loginfo('skipping low object')
-                continue
+            if obj_pose.pose.position.x > MAXIMUM_DIST_ADJUST:
+                obj_pose.pose.position.x = MAXIMUM_DIST_ADJUST
+                rospy.logwarn('readjusting x coord to %.3f', obj_pose.pose.position.x)
+
+            # readjust x further from object
+            obj_pose.pose.position.x -= GRIPPER_LINK_OFFSET
+            if obj_pose.pose.position.z < TABLE_HEIGHT:
+                obj_pose.pose.position.z = TABLE_HEIGHT
+                rospy.logwarn('readjusting height of object to %.3f', obj_pose.pose.position.z)
 
             goal = PickupGoal()
             goal.pose = obj_pose
-            goal.closed_gripper_joint_values = [-0.3]
+            goal.closed_gripper_joint_values = [-1.]
 
+            rospy.loginfo('sending a pickup action goal')
             self._client.send_goal(goal)
             self._client.wait_for_result()
             rospy.loginfo(self._client.get_result())
+            rospy.loginfo('stop picking objects')
+            break
 
 
 def main(service_name, cloud_topic, result_topic, class_annotation_file, target_frame):

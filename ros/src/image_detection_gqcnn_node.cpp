@@ -9,6 +9,7 @@
 #include <future>   // NOLINT
 #include <chrono>   // NOLINT
 #include <ros/ros.h>
+#include <std_msgs/String.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <std_msgs/Header.h>
 #include <tf/transform_listener.h>
@@ -24,7 +25,7 @@
 
 namespace mpl = mas_perception_libs;
 
-const std::string ImageDetectionGQCNNNode::cAllowedLabels[] = { "bottle", "cup", "remote", "vase", "cake" };
+const std::string ImageDetectionGQCNNNode::cAllowedLabels[] = { "bottle", "cup", "remote", "vase", "cake", "ball" };
 
 ImageDetectionGQCNNNode::ImageDetectionGQCNNNode(const ros::NodeHandle& pNodeHandle, std::string pRgbImgTopic,
                                                  std::string pDepthImgTopic, std::string pCameraInfoTopic,
@@ -33,8 +34,8 @@ ImageDetectionGQCNNNode::ImageDetectionGQCNNNode(const ros::NodeHandle& pNodeHan
                                                  int pWaitTime)
         : mNodeHandle(pNodeHandle), mImageTransport(mNodeHandle), mRgbImageSub(mImageTransport, pRgbImgTopic, 1),
           mDepthImageSub(mImageTransport, pDepthImgTopic, 1), mCameraInfoSub(mNodeHandle, pCameraInfoTopic, 1),
-          mSync(ImagePolicy(1), mRgbImageSub, mDepthImageSub, mCameraInfoSub), mPickupClient(pPickupActionServer),
-          mTargetFrame(pTargetFrame), mWaitTime(pWaitTime)
+          mSync(ImagePolicy(5), mRgbImageSub, mDepthImageSub, mCameraInfoSub), mPickupClient(pPickupActionServer),
+          mTargetFrame(pTargetFrame), mWaitTime(pWaitTime), mTriggered(false)
 {
     ROS_INFO("waiting for image detection service: %s", pDetectService.c_str());
     mDetectionClient = mNodeHandle.serviceClient<mcr_perception_msgs::DetectImage>(pDetectService);
@@ -65,6 +66,7 @@ ImageDetectionGQCNNNode::ImageDetectionGQCNNNode(const ros::NodeHandle& pNodeHan
     mMarkerPub = mNodeHandle.advertise<visualization_msgs::Marker>(cGraspMarkerTopic, 1);
     mMarkerArrayPub = mNodeHandle.advertise<visualization_msgs::MarkerArray>(cGraspMarkerTopic + "_array", 1);
     mBoxImagePub = mImageTransport.advertise(cBoxImageTopic, 1);
+    mEventSub = mNodeHandle.subscribe("event_in", 1, &ImageDetectionGQCNNNode::triggerCallback, this);
 
     ROS_INFO("synchronizing topics: RGB - %s, depth - %s, camera info - %s",
              pRgbImgTopic.c_str(), pDepthImgTopic.c_str(), pCameraInfoTopic.c_str());
@@ -72,9 +74,24 @@ ImageDetectionGQCNNNode::ImageDetectionGQCNNNode(const ros::NodeHandle& pNodeHan
 }
 
 void
+ImageDetectionGQCNNNode::triggerCallback(const std_msgs::String::ConstPtr& msg)
+{
+    mTriggered = true;
+}
+
+void
 ImageDetectionGQCNNNode::syncCallback(const sm::ImageConstPtr& pRgbImagePtr, const sm::ImageConstPtr& pDepthImagePtr,
                                       const sm::CameraInfoConstPtr& pCamInfoPtr)
 {
+    if (!mTriggered)
+    {
+        ROS_INFO("not triggered");
+        ros::Duration(0.5).sleep();
+        return;
+    }
+    mTriggered = false;
+
+    ROS_INFO("calling detection service");
     std::future<mpm::DetectImageResponse> detectionCall =
             std::async(&ImageDetectionGQCNNNode::requestDetectionService, this, pRgbImagePtr);
     if (detectionCall.wait_for(mWaitTime) == std::future_status::timeout)
@@ -109,6 +126,8 @@ ImageDetectionGQCNNNode::syncCallback(const sm::ImageConstPtr& pRgbImagePtr, con
             continue;
         }
 
+        ROS_INFO("planning grasp for: %s (confidence %.3f)", detectionResult.detections[0].classes[i].c_str(),
+                 detectionResult.detections[0].probabilities[i]);
         gqcnn::GQCNNGraspPlannerRequest gqcnnRequest;
         gqcnnRequest.camera_info = *pCamInfoPtr;
         gqcnnRequest.color_image = *pRgbImagePtr;
@@ -182,8 +201,8 @@ ImageDetectionGQCNNNode::executeGrasps(const std::vector<gqcnn::GQCNNGrasp> &pGr
     {
         if (pGrasps[i].grasp_success_prob < pGraspConfThreshold)
         {
-            ROS_INFO("skipping grasp for '%s' because of low confidence threshold", pDetection.classes[i].c_str());
-            continue;
+            ROS_WARN("grasp for '%s' has low confidence threshold (%.3f)",
+                     pDetection.classes[pBoxIndices[i]].c_str(), pGrasps[i].grasp_success_prob);
         }
 
         geometry_msgs::PoseStamped objPose, transformedPose;
@@ -191,35 +210,34 @@ ImageDetectionGQCNNNode::executeGrasps(const std::vector<gqcnn::GQCNNGrasp> &pGr
         objPose.pose = pGrasps[i].pose;
         try
         {
+            ros::Time commonTime;
+            mTfListener.getLatestCommonTime(mTargetFrame, objPose.header.frame_id, commonTime, NULL);
+            objPose.header.stamp = commonTime;
             mTfListener.transformPose(mTargetFrame, objPose, transformedPose);
         }
         catch (tf::TransformException &ex)
         {
             ROS_ERROR("unable to transform pose of object '%s' from frame '%s' to frame '%s': %s",
-                      pDetection.classes[i].c_str(), pHeader.frame_id.c_str(), mTargetFrame.c_str(), ex.what());
+                      pDetection.classes[pBoxIndices[i]].c_str(), pHeader.frame_id.c_str(), mTargetFrame.c_str(),
+                      ex.what());
             continue;
         }
 
-//        // set orientation to facing table for experiments
-//        objPose.pose.orientation.x = 0.5
-//        objPose.pose.orientation.y = -0.5
-//        objPose.pose.orientation.z = 0.5
-//        objPose.pose.orientation.w = 0.5
-
         ROS_INFO("label %s: coord mean (frame {%s}): x=%.3f, y=%.3f, z=%.3f",
-                 pDetection.classes[i].c_str(), objPose.header.frame_id.c_str(), objPose.pose.position.x,
-                 objPose.pose.position.y, objPose.pose.position.z);
+                 pDetection.classes[pBoxIndices[i]].c_str(), transformedPose.header.frame_id.c_str(),
+                 transformedPose.pose.position.x, transformedPose.pose.position.y, transformedPose.pose.position.z);
 
-        if (objPose.pose.position.x > 0.9)
+        if (transformedPose.pose.position.x > 0.9)
         {
             ROS_INFO("skipping far away object");
             continue;
         }
 
-        if (objPose.pose.position.z < 0.7)
+        transformedPose.pose.position.x -= cGripperLinkOffset;
+        if (transformedPose.pose.position.z < cTableHeight)
         {
-            ROS_INFO("skipping low object");
-            continue;
+            transformedPose.pose.position.z = cTableHeight;
+            ROS_INFO("readjusting height of object to %.2f", transformedPose.pose.position.z);
         }
 
         // send actionlib goal
@@ -234,7 +252,8 @@ ImageDetectionGQCNNNode::executeGrasps(const std::vector<gqcnn::GQCNNGrasp> &pGr
         }
 
         auto result = mPickupClient.getState();
-        ROS_INFO("pickup action finished: %s", result.toString().c_str());
+        ROS_INFO("pickup action finished: %s, stop executing grasps", result.toString().c_str());
+        break;
     }
 }
 

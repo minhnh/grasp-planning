@@ -12,6 +12,7 @@
 #include <chrono>   // NOLINT
 #include <ros/ros.h>
 #include <actionlib/client/simple_action_client.h>
+#include <std_msgs/String.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/CameraInfo.h>
 #include <tf/transform_listener.h>
@@ -42,6 +43,9 @@ public:
     syncCallback(const sm::ImageConstPtr&, const sm::ImageConstPtr&, const sm::CameraInfoConstPtr&);
 
 private:
+    void
+    triggerCallback(const std_msgs::String::ConstPtr&);
+
     mpm::DetectImageResponse
     requestDetectionService(const sm::ImageConstPtr&);
 
@@ -61,8 +65,11 @@ private:
     const std::string cGraspMarkerTopic = "grasp_markers";
     const std::string cMarkerNamespace = "gqcnn_grasps";
     const std::string cBoxImageTopic = "detection_image";
-    static constexpr double sDefaultGraspConfThreshold = 0.01;
+    const std::string cCartsianControlTopic = "/dmp_executor/pickup_goal";
     static const std::string cAllowedLabels[];
+    static constexpr double sDefaultGraspConfThreshold = 0.01;
+    static constexpr double cTableHeight = 0.78;
+    static constexpr double cGripperLinkOffset = 0.04;
 
 private:
     ros::NodeHandle mNodeHandle;
@@ -73,6 +80,7 @@ private:
     it::Publisher mBoxImagePub;
     ros::Publisher mMarkerPub;
     ros::Publisher mMarkerArrayPub;
+    ros::Subscriber mEventSub;
     actionlib::SimpleActionClient<mdr_pickup_action::PickupAction> mPickupClient;
     tf::TransformListener mTfListener;
 
@@ -87,6 +95,7 @@ private:
 
     std::chrono::seconds mWaitTime;
     std::string mTargetFrame;
+    bool mTriggered;
 };
 
 #endif  // GRASP_PLANNING_IMAGE_DETECTION_GQCNN_NODE_H
