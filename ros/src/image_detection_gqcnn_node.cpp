@@ -246,7 +246,6 @@ GraspPlannerGQCNNNode::executeGrasps(const std::vector<gqcnn::GQCNNGrasp> &pGras
         // send actionlib goal
         mdr_pickup_action::PickupGoal goal;
         goal.pose = transformedPose;
-        goal.closed_gripper_joint_values.push_back(-0.3f);
         mPickupClient.sendGoal(goal);
         if (!mPickupClient.waitForResult(ros::Duration(mWaitTime.count())))
         {
@@ -326,7 +325,9 @@ GraspPlannerGQCNNNode::visualizeGraspsAndObjects(const sm::ImageConstPtr& pImage
         objectLblMarker.scale.z = 0.05;    // height of letter 'A'
         objectLblMarker.color = defaultColor;
         std::stringstream label;
-        label << pDetection.classes[pBoxIndices[i]] << " (" << pGrasps[i].grasp_success_prob << ")";
+        // round probability to 3 digits
+        float roundedProb = static_cast<int>(pGrasps[i].grasp_success_prob * 1000) / 1000.0f;
+        label << pDetection.classes[pBoxIndices[i]] << " (" << roundedProb << ")";
         objectLblMarker.text = label.str();
         objectLblMarker.pose = pGrasps[i].pose;
         objectLblMarker.lifetime = ros::Duration(20.0);
