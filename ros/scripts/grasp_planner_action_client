@@ -26,7 +26,7 @@ class PoseEstimateGraspPlanner(object):
     _pickup_client = None       # type: SimpleActionClient
     _detect_client = None       # type: SimpleActionClient
 
-    def __init__(self, detect_action_name, pickup_action_name, grasp_config, timeout=5):
+    def __init__(self, detect_action_name, pickup_action_name, grasp_config, timeout=30):
 
         for config_name in REQUIRED_GRASP_CONFIGS:
             if config_name not in grasp_config:
@@ -42,7 +42,7 @@ class PoseEstimateGraspPlanner(object):
         self._detect_client = SimpleActionClient(detect_action_name, DetectSceneAction)
         rospy.loginfo("waiting for object detection action server: " + detect_action_name)
         if not self._detect_client.wait_for_server(rospy.Duration(timeout)):
-            raise RuntimeError("failed to wait for pickup action server after {0} second(s)".format(timeout))
+            raise RuntimeError("failed to wait for detection action server after {0} second(s)".format(timeout))
 
         if self._max_grasp_num > 0:
             self._pickup_client = SimpleActionClient(pickup_action_name, PickupAction)
@@ -70,8 +70,9 @@ class PoseEstimateGraspPlanner(object):
                 if not self._filter_detected_objects(obj):
                     continue
 
-                rospy.loginfo('object position: x={0:.3f}, y={1:.3f}, z={2:.3f}'
-                              .format(obj.pose.pose.position.x, obj.pose.pose.position.y, obj.pose.pose.position.z))
+                rospy.loginfo('object "{0}" position: x={1:.3f}, y={2:.3f}, z={3:.3f}'
+                              .format(obj.name, obj.pose.pose.position.x, obj.pose.pose.position.y,
+                                      obj.pose.pose.position.z))
 
                 grasp_exec_count += 1
                 if grasp_exec_count > self._max_grasp_num:
